@@ -9,8 +9,10 @@ __version__ = "1.0"
 __status__ = "Development"
 
 import numpy as np
-import csv
 import datetime
+import requests
+import sys
+import csv
 from laspy import *
 
 # LASFileManager : handles IO streams of LAS to CSV
@@ -260,8 +262,8 @@ def las_to_csv(input_file_name, output_file_name):
     inFile.close()
     outFile.close()
 
-# las_to_csv_2 : extracts only x,y,z values to be transformed
-def las_to_csv_2(input_file_name, output_file_name, utm_zone):
+# las_to_csv_sub : extracts only x,y,z values to be transformed
+def las_to_csv_sub(input_file_name, output_file_name, utm_zone):
 
     fileManager = LASFileManager(input_file_name, output_file_name)
 
@@ -277,7 +279,7 @@ def las_to_csv_2(input_file_name, output_file_name, utm_zone):
     file_info = fileManager.fileInfo
 
     # write header information to csv
-    outFile.write("utm_e,utm_n,height," + utm_zone + "\n")
+    outFile.write("utm_e,utm_n,height,utm_z" + "\n")
 
     attributes = file_info.attributes
 
@@ -304,7 +306,7 @@ def las_to_csv_2(input_file_name, output_file_name, utm_zone):
                 elif attributes[index] == "Z":
                     outValue = ( attribute * file_info.z_scale ) + file_info.z_offset
                 elif index == 3:
-                    outValue = "ON-9"
+                    outValue = utm_zone
                 else:
                     break
                     outValue = attribute
@@ -312,7 +314,7 @@ def las_to_csv_2(input_file_name, output_file_name, utm_zone):
                 lineValues.append(outValue)
                 line += (str(outValue))
 
-                if index < 3:#file_info.header_size-1:
+                if index < 3:
                     line += ","
 
                 index += 1
@@ -323,46 +325,92 @@ def las_to_csv_2(input_file_name, output_file_name, utm_zone):
 
         if progressCounter % 1000 == 0:
             print(str(progressCounter) + " / " + str(progressMax))
+
+        if progressCounter == 1000000:
             break
 
     # close streams
     inFile.close()
     outFile.close()
 
+# call to GPSH webservice
+def call_webservice(in_file, conversionModel, geoidModel, model, frame, epoch, tocsv):
+    service_url = 'https://webapp.geod.nrcan.gc.ca/CSRS/tools/GPSH/upload'
+
+    post_fields = {
+        # "lang":lang,
+        # "conversion":"on",
+        "model": model,
+        "frame":frame,
+        "epoch":epoch
+    }
+
+    files = {'file': open(in_file)}
+
+    print("requesting")
+    # post request
+    req = requests.post(service_url, data=post_fields, files=files)
+
+    print("received")
+
+    # print intermediate csv
+    if tocsv:
+        with open('output.csv',mode='w') as _file:
+            _file.write(req.text)
+
+    # parse http response
+    data = req.text.split("\n")
+    header = data.pop(0)
+    matrix = np.array([header.split(",")])
+
+    siz = len(data)
+    count = 0
+
+    for row in data:
+        # dimension check
+        if len(row) == len(header):
+            matrix = np.append(matrix,[row.split(",")], axis=0)
+        count += 1
+        if count % 1000 == 0:
+            print(str(count) + " / " + str(siz))
+
+    return matrix
+
+# returns a list of of elements defined by the height code header
+def extract_height(matrix, height_code):
+    header = matrix[:1][0]
+    res = []
+
+    for i in range(len(header)):
+        if header[i] == height_code:
+            res.append(i)
+
+    return matrix[:, res[0]]
+
+
 # Main Script
-inf = "0243690065100_2013_ALLHITS.las"
-outf = "output_full_trunc.csv"
 
-las_to_csv_2(inf, outf, "ON-9")
+in_file = "test.las"
+mid_file = "LAS_CSV.temp.csv"
+tmp_file = "output_full_trunc.csv"
+out_file = "output.las"
+testfile = "sample-gpsh-geo.csv"
 
-#fm = LASFileManager(inf, outf)
-#fm.open_read_stream()
-#fm.open_write_stream()
-#
-#for i in fm.readStream.header.vlrs:
-#    print(i.to_byte_string())
+las_to_csv_sub(in_file,mid_file,"ON-9")
 
+matrix = call_webservice(mid_file, "", "", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", True)
 
-# asd = file.File(inf, mode='rw')
-#
-# x = asd.X
-# y = asd.Y
-# z = asd.Z
-#
-# asd.X = y
-# asd.Y = z
-# asd.Z = x
-#
-# asd.close()
+# TODO : copy the existing in_file before any changes are to be committed file
 
-#fm.readStream.X = y
-#fm.readStream.Y = z
-#fm.readStream.Z = x
+print("matrix done")
 
-# lasfm = base.FileManager(inf, mode='r')
+readStream = file.File(in_file, mode='rw')
+print("open file rw")
+readStream.X = extract_height(matrix,"H2013")
+print("done extracting")
+readStream.close()
+print(len(readStream.X))
 
-#print(fm.readStream.point_format.etree())
-
-#fm.writeln(str(fm.readStream.header.schema.xml()))
-
-#csv_to_las("", "test.las")
+arr = np.array([[1,2,3],[4,5,6]])
+arr = np.append(arr,[[7,8,9]], axis=0)
+print(arr)
