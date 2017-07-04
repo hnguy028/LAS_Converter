@@ -326,7 +326,8 @@ def las_to_csv_sub(input_file_name, output_file_name, utm_zone):
         if progressCounter % 1000 == 0:
             print(str(progressCounter) + " / " + str(progressMax))
 
-        if progressCounter == 1000000:
+        # limit number of file to calculate
+        if progressCounter >= 500000:
             break
 
     # close streams
@@ -348,7 +349,9 @@ def call_webservice(in_file, conversionModel, geoidModel, model, frame, epoch, t
     files = {'file': open(in_file)}
 
     print("requesting")
+
     # post request
+    # TODO : web service cannot handle large files, crashes with >600 000 lines
     req = requests.post(service_url, data=post_fields, files=files)
 
     print("received")
@@ -401,16 +404,18 @@ las_to_csv_sub(in_file,mid_file,"ON-9")
 matrix = call_webservice(mid_file, "", "", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", True)
 
 # TODO : copy the existing in_file before any changes are to be committed file
+# TODO : partition LAS points into separate csv files to be sent to the webservice
 
-print("matrix done")
+print("Matrix Calculated")
 
 readStream = file.File(in_file, mode='rw')
-print("open file rw")
+print("Open file rw")
+
+# Note: Will throw exception because points are being limited above
 readStream.X = extract_height(matrix,"H2013")
-print("done extracting")
+
+print("Done Extracting")
 readStream.close()
 print(len(readStream.X))
 
-arr = np.array([[1,2,3],[4,5,6]])
-arr = np.append(arr,[[7,8,9]], axis=0)
-print(arr)
+print("Script Terminating")
