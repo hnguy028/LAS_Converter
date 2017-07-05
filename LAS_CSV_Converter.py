@@ -10,10 +10,13 @@ __status__ = "Development"
 
 import numpy as np
 import datetime
+import time
 import requests
 import sys
+import shutil
 import csv
 from laspy import *
+import xml.etree.ElementTree as elt
 
 # LASFileManager : handles IO streams of LAS to CSV
 class LASFileManager:
@@ -28,7 +31,7 @@ class LASFileManager:
         self.fileInfo = None
 
     def open_read_stream(self):
-        self.readStream = file.File(self.inFileName, mode='r')
+        self.readStream = file.File(self.inFileName, mode='rw')
 
         num_points = self.readStream.__len__()
 
@@ -158,6 +161,114 @@ class FileInfo:
                 head += ","
 
         return head
+
+class WebService:
+
+    def __init__(self, service_url, model, frame, epoch, tocsv):
+        self.service_url = service_url
+        self.model = model
+        self.frame = frame
+        self.epoch = epoch
+        self.tocsv = tocsv
+
+        self.lang = "en"
+        self.conversion = "on"
+        self.projection = "geo"
+        self.westpos = "true"
+
+    def setConversionType(self, type, projection):
+        if type == "batch":
+            self.service_url = 'https://webapp.geod.nrcan.gc.ca/CSRS/tools/GPSH/upload'
+        elif type == "CGG2013a":
+            self.service_url = 'https://webapp.geod.nrcan.gc.ca/CSRS/tools/GPSH/CGG2013a'
+        elif type == "HT2_0_CGG2013a":
+            self.service_url = 'https://webapp.geod.nrcan.gc.ca/CSRS/tools/GPSH/HT2_0_CGG2013a'
+
+        self.projection = projection
+
+        return self.service_url
+
+    # call to GPSH webservice
+    def batch_call(self, in_file):
+        self.setServiceURL("batch")
+
+        post_fields = {
+            # "lang":lang,
+            # "conversion":"on",
+            "model": self.model,
+            "frame": self.frame,
+            "epoch": self.epoch
+        }
+
+        files = {'file': open(in_file)}
+
+        print("requesting")
+
+        # TODO : web service cannot handle large files, crashes with >600 000 lines
+        # post request
+        req = requests.post(self.service_url, data=post_fields, files=files)
+
+        print("received")
+
+        # print intermediate csv
+        if self.tocsv:
+            with open('output.csv', mode='w') as _file:
+                _file.write(req.text)
+
+        # parse http response
+        data = req.text.split("\n")
+        header = data.pop(0)
+        matrix = np.array([header.split(",")])
+
+        siz = len(data)
+        count = 0
+
+        for row in data:
+            # dimension check
+            if len(row) == len(header):
+                matrix = np.append(matrix, [row.split(",")], axis=0)
+            count += 1
+            if count % 1000 == 0:
+                print(str(count) + " / " + str(siz))
+
+        return matrix
+
+    def single_point(self, x, y, z, type=None, projection=None, lang=None, conversion=None, westpos=None, model=None, frame=None, epoch=None):
+
+        if type != None: self.setServiceURL(type)
+        self.projection = projection if projection != None else self.projection
+        self.lang = lang if lang != None else self.lang
+        self.conversion = conversion if conversion != None else self.conversion
+        self.westpos = westpos if westpos != None else self.westpos
+        self.model = model if model != None else self.model
+        self.frame = frame if frame != None else self.frame
+        self.epoch = epoch if epoch != None else self.epoch
+
+        # dict of params to send to the web service
+        data = {
+            'lang': self.lang,
+            'proj': self.projection,
+            'conversion': self.conversion,
+            'westpos': self.westpos,
+            #'conversionModel': '',
+            #'geoidModel': '',
+            'model': self.model,
+            'frame': self.frame,
+            'epoch': self.epoch,
+            'x': x,
+            'y': y,
+            'z': z,
+            'westpos': self.westpos
+        }
+
+        if self.projection == "plan": data["zone"] = "ON-9"
+
+        req = requests.get(self.service_url, data)
+        #print(req.text)
+
+        # TODO : return the parsed xml as iterable data structure
+        return req.text
+
 
 # INCOMPLETE - this function has not yet been fully implemented
 def csv_to_las(input_file_name, output_file_name):
@@ -327,57 +438,12 @@ def las_to_csv_sub(input_file_name, output_file_name, utm_zone):
             print(str(progressCounter) + " / " + str(progressMax))
 
         # limit number of file to calculate
-        if progressCounter >= 500000:
-            break
+        #if progressCounter >= 500000:
+        #    break
 
     # close streams
     inFile.close()
     outFile.close()
-
-# call to GPSH webservice
-def call_webservice(in_file, conversionModel, geoidModel, model, frame, epoch, tocsv):
-    service_url = 'https://webapp.geod.nrcan.gc.ca/CSRS/tools/GPSH/upload'
-
-    post_fields = {
-        # "lang":lang,
-        # "conversion":"on",
-        "model": model,
-        "frame":frame,
-        "epoch":epoch
-    }
-
-    files = {'file': open(in_file)}
-
-    print("requesting")
-
-    # post request
-    # TODO : web service cannot handle large files, crashes with >600 000 lines
-    req = requests.post(service_url, data=post_fields, files=files)
-
-    print("received")
-
-    # print intermediate csv
-    if tocsv:
-        with open('output.csv',mode='w') as _file:
-            _file.write(req.text)
-
-    # parse http response
-    data = req.text.split("\n")
-    header = data.pop(0)
-    matrix = np.array([header.split(",")])
-
-    siz = len(data)
-    count = 0
-
-    for row in data:
-        # dimension check
-        if len(row) == len(header):
-            matrix = np.append(matrix,[row.split(",")], axis=0)
-        count += 1
-        if count % 1000 == 0:
-            print(str(count) + " / " + str(siz))
-
-    return matrix
 
 # returns a list of of elements defined by the height code header
 def extract_height(matrix, height_code):
@@ -390,32 +456,77 @@ def extract_height(matrix, height_code):
 
     return matrix[:, res[0]]
 
+def parse_request_XML(xml):
+    return None
 
 # Main Script
 
+# debugging file names
 in_file = "test.las"
-mid_file = "LAS_CSV.temp.csv"
-tmp_file = "output_full_trunc.csv"
-out_file = "output.las"
-testfile = "sample-gpsh-geo.csv"
+pre_web_service = "prewb.temp.csv"
 
-las_to_csv_sub(in_file,mid_file,"ON-9")
+pre_mod = "converted_"
+out_file = pre_mod + in_file
 
-matrix = call_webservice(mid_file, "", "", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", True)
+# open streams
+file_manager = LASFileManager(in_file, "")
+file_manager.open_read_stream()
+readStream = file_manager.readStream
+file = file_manager.fileInfo
 
-# TODO : copy the existing in_file before any changes are to be committed file
+starttime = time.time()
+
+# Batch conversion ----------------------------------------------------------------------------------------
 # TODO : partition LAS points into separate csv files to be sent to the webservice
 
-print("Matrix Calculated")
+#las_to_csv_sub(in_file,pre_web_service,"ON-9")
+#matrix = call_webservice(pre_web_service, "", "", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", True)
 
-readStream = file.File(in_file, mode='rw')
-print("Open file rw")
+# create a copy of the file to be modified
+#shutil.copy(in_file, out_file)
 
 # Note: Will throw exception because points are being limited above
-readStream.X = extract_height(matrix,"H2013")
+#readStream.X = extract_height(matrix,"H2013")
 
-print("Done Extracting")
+# End batch conversion -----------------------------------------------------------------------------------
+
+
+# Single Point Conversion Loop ---------------------------------------------------------------------------
+writeStream = open("compare.csv", mode='w')
+
+print("Webservice call")
+
+# Instantiate webservice class
+wbservice = WebService("", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", False)
+wbservice.setConversionType("HT2_0_CGG2013a","plan")
+
+# iterate over points in the las file
+for i in range(readStream.__len__()):
+    # calculate actual point and send to the webservice
+    res = wbservice.single_point(readStream.X[i] * file.x_scale + file.x_offset,readStream.Y[i] * file.y_scale + file.y_offset,readStream.Z[i] * file.z_scale + file.z_offset)
+
+    # extract information from xml dom
+    root = elt.fromstring(res)
+
+    # height for debugging
+    z =  readStream.Z[i] * file.z_scale + file.z_offset
+    writeStream.write(str(z) + "," + root[8].text + "\n")
+
+    # write new height to the las file
+    readStream.X[i] = float(root[8].text)
+
+    # progress counter for debugging
+    if i % 100 == 0 :
+        print(str(i) + " / " + str(readStream.__len__()))
+        break
+
+# close io streams
+writeStream.close()
 readStream.close()
-print(len(readStream.X))
+
+# elapsed time in seconds
+endtime = time.time()
+difftime = endtime - starttime
+print("Time:" + str(starttime) + " - " + str(endtime) + " = " + str(difftime))
 
 print("Script Terminating")
