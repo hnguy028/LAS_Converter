@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 '''
     LAS_CSV_Converter.py : This python script is intended to convert LIDAR LAS files to and from CSV format
+                            the script can also modify the existing points using a webservice call or an implemented function
 '''
 
 __author__ = "Hieu Nguyen"
@@ -190,7 +191,7 @@ class WebService:
 
     # call to GPSH webservice
     def batch_call(self, in_file):
-        self.setServiceURL("batch")
+        self.setConversionType("batch", self.conversion)
 
         post_fields = {
             # "lang":lang,
@@ -202,13 +203,9 @@ class WebService:
 
         files = {'file': open(in_file)}
 
-        print("requesting")
-
         # TODO : web service cannot handle large files, crashes with >600 000 lines
         # post request
         req = requests.post(self.service_url, data=post_fields, files=files)
-
-        print("received")
 
         # print intermediate csv
         if self.tocsv:
@@ -219,17 +216,17 @@ class WebService:
         data = req.text.split("\n")
         header = data.pop(0)
         matrix = np.array([header.split(",")])
-
         siz = len(data)
         count = 0
 
         for row in data:
-            # dimension check
-            if len(row) == len(header):
-                matrix = np.append(matrix, [row.split(",")], axis=0)
+            row_data = np.array([row.split(",")])
+            if len(matrix[0]) == len(row_data[0]):
+                matrix = np.append(matrix, row_data, axis=0)
+
             count += 1
-            if count % 1000 == 0:
-                print(str(count) + " / " + str(siz))
+            #if count % 1000 == 0:
+            #    print(str(count) + " / " + str(siz))
 
         return matrix
 
@@ -454,7 +451,7 @@ def extract_height(matrix, height_code):
         if header[i] == height_code:
             res.append(i)
 
-    return matrix[:, res[0]]
+    return matrix[1:, res[0]]
 
 def parse_request_XML(xml):
     return None
@@ -462,7 +459,7 @@ def parse_request_XML(xml):
 # Main Script
 
 # debugging file names
-in_file = "test.las"
+in_file = "90000.las"
 pre_web_service = "prewb.temp.csv"
 
 pre_mod = "converted_"
@@ -472,56 +469,73 @@ out_file = pre_mod + in_file
 file_manager = LASFileManager(in_file, "")
 file_manager.open_read_stream()
 readStream = file_manager.readStream
-file = file_manager.fileInfo
+main_file = file_manager.fileInfo
 
 starttime = time.time()
 
 # Batch conversion ----------------------------------------------------------------------------------------
 # TODO : partition LAS points into separate csv files to be sent to the webservice
+wbservice = WebService("", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", False)
+wbservice.setConversionType("HT2_0_CGG2013a","plan")
 
-#las_to_csv_sub(in_file,pre_web_service,"ON-9")
-#matrix = call_webservice(pre_web_service, "", "", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", True)
+las_to_csv_sub(in_file,pre_web_service,"ON-9")
+matrix = wbservice.batch_call(pre_web_service)
 
 # create a copy of the file to be modified
-#shutil.copy(in_file, out_file)
+shutil.copy(in_file, out_file)
+
+file_manager2 = LASFileManager(out_file, "")
+file_manager2.open_read_stream()
+rwStream = file_manager2.readStream
+batch_file = file_manager2.fileInfo
 
 # Note: Will throw exception because points are being limited above
-#readStream.X = extract_height(matrix,"H2013")
+new_heights = extract_height(matrix,"H2013").astype(np.float)
+for i in range(len(new_heights)):
+    new_heights[i] = (new_heights[i] - batch_file.z_offset) / batch_file.z_scale
+
+print(rwStream.Z)
+print(new_heights)
+rwStream.Z = new_heights
+rwStream.close()
 
 # End batch conversion -----------------------------------------------------------------------------------
 
 
 # Single Point Conversion Loop ---------------------------------------------------------------------------
-writeStream = open("compare.csv", mode='w')
+#writeStream = open("compare.csv", mode='w')
+#
+#print("Webservice call")
+#
+## Instantiate webservice class
+#wbservice = WebService("", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", False)
+#wbservice.setConversionType("HT2_0_CGG2013a","plan")
+#
+## iterate over points in the las file
+#for i in range(readStream.__len__()):
+#    # calculate actual point and send to the webservice
+#    res = wbservice.single_point(readStream.X[i] * main_file.x_scale + main_file.x_offset,readStream.Y[i] * main_file.y_scale + main_file.y_offset,readStream.Z[i] * main_file.z_scale + main_file.z_offset)
+#
+#    # extract information from xml dom
+#    root = elt.fromstring(res)
+#
+#    # height for debugging
+#    z =  (readStream.Z[i] - main_file.z_offset) / main_file.z_scale
+#    writeStream.write(str(z) + "," + root[8].text + "\n")
+#
+#    # write new height to the las file
+#    readStream.Z[i] = (float(root[8].text) - main_file.z_offset) / main_file.z_scale
+#
+#    # progress counter for debugging
+#    #if i % 100 == 0 :
+#    print(str(i) + " / " + str(readStream.__len__()))
+#        #break
+#
+## close io streams
+#writeStream.close()
 
-print("Webservice call")
+# End single point conversion --------------------------------------------------------------------------
 
-# Instantiate webservice class
-wbservice = WebService("", "HT2_0_CGG2013a", "NAD83%28CSRS%29", "1997-01-01", False)
-wbservice.setConversionType("HT2_0_CGG2013a","plan")
-
-# iterate over points in the las file
-for i in range(readStream.__len__()):
-    # calculate actual point and send to the webservice
-    res = wbservice.single_point(readStream.X[i] * file.x_scale + file.x_offset,readStream.Y[i] * file.y_scale + file.y_offset,readStream.Z[i] * file.z_scale + file.z_offset)
-
-    # extract information from xml dom
-    root = elt.fromstring(res)
-
-    # height for debugging
-    z =  readStream.Z[i] * file.z_scale + file.z_offset
-    writeStream.write(str(z) + "," + root[8].text + "\n")
-
-    # write new height to the las file
-    readStream.X[i] = float(root[8].text)
-
-    # progress counter for debugging
-    if i % 100 == 0 :
-        print(str(i) + " / " + str(readStream.__len__()))
-        break
-
-# close io streams
-writeStream.close()
 readStream.close()
 
 # elapsed time in seconds
